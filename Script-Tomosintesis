@@ -1,0 +1,590 @@
+
+macro "Dispersion de Objetos" {
+Dialog.create("Dispersion geometrica y de Objetos");
+Dialog.addMessage("Plugin para Control de Calidad en Tomosintesis",15);
+Dialog.addMessage("El Plugin permite calcular automaticamente la dispersion geometrica", 11);
+Dialog.addMessage("y dispersion de objetos segun las pruebas TDM14 y TDM15", 11);
+Dialog.addMessage("del Protocolo de Tomosintesis Septiembre 2020", 11);
+Dialog.addMessage("Autores: David Diaz, Julia Garayoa y Margarita Chevalier-UCM-Junio 2022", 9, "blue");
+Dialog.show;
+Dialog.create("Dispersion geometrica y de Objetos");
+Dialog.addMessage("Ingreso de Informacion y Parametros para el calculo:",15,"red");
+ruta="/";
+items = newArray("Archivo de Stack de Imagenes", "Carpeta contenedora de Imagenes");
+Dialog.addRadioButtonGroup("Seleccione la forma en la que estan almacenados los planos reconstruidos:", items, 1, 2, "Archivo de Stack de Imagenes");
+items = newArray("General Electric", "Hologic", "Siemens");
+Dialog.addRadioButtonGroup("Seleccione el fabricante del Equipo:", items, 1, 3, "General Electric");
+Dialog.addDirectory("Seleccione ubicacion de los resultados:",ruta);
+Dialog.addString("Nombre del archivo de Resultados:", " ");
+Dialog.addNumber("Ingrese la distancia entre bolas en mm en el maniqui:", "55.0");
+Dialog.addNumber("Plano en foco estimado en mm:", "0.0");
+items = newArray("Criterio 30%", "Criterio 50%");
+Dialog.addRadioButtonGroup("Seleccione el criterio de calculo de la anchura de la curva resultante del ajuste:", items, 1, 2, "Criterio 0.3");
+Dialog.addMessage("Criterio 30%: los algoritrmos hibridos (mezcla FDK e iterativo) dan lugar a curvas de dispersion de artefactos que no son de tipo Gaussiano.", 9, "blue");
+Dialog.addMessage("En este caso se ha considerado que lo mas adecuado para medir la dispersion es considerar la anchura de la curva de ajuste al 30% del maximo.", 9, "blue");
+Dialog.addMessage("Criterio 50%: los algoritrmos de reconstruccion tipo FDK dan lugar a curvas de dispersion de artefactos que son de tipo Gaussiano.", 9, "blue");
+Dialog.addMessage("En este caso la dispersion se calcula como la anchura de la curva al 50%.", 9, "blue");
+Dialog.show;
+almacenamiento = Dialog.getRadioButton();
+fabricante = Dialog.getRadioButton();
+ruta = Dialog.getString();
+nombre = Dialog.getString();
+dt=Dialog.getNumber();
+foco_est=Dialog.getNumber();
+criterio = Dialog.getRadioButton();
+if (almacenamiento == "Archivo de Stack de Imagenes"){
+	ruta_planos=" ";
+	Dialog.create("Dispersion geometrica y de Objetos");
+	Dialog.addMessage("Pulse el boton Browse y Seleccione el archivo que contiene el Stack que contiene los planos reconstruidos:", 13);
+	Dialog.addFile("Archivo:",ruta_planos);
+	Dialog.show;
+	ruta_planos = Dialog.getString();
+	open(ruta_planos);
+}
+if (almacenamiento == "Carpeta contenedora de Imagenes"){
+	ruta_planos=" ";
+	Dialog.create("Dispersion geometrica y de Objetos");
+	Dialog.addMessage("Pulse el boton Browse y Seleccione la carpeta contenedora de los planos reconstruidos:", 13);
+	Dialog.addDirectory("Carpeta:",ruta_planos);
+	Dialog.show;
+	ruta_planos = Dialog.getString();
+	ruta_planos = ' "dir=['+ruta_planos+'] sort"';
+	run("Image Sequence...", ruta_planos);
+}
+Dialog.create("Dispersion geometrica y de Objetos");
+Dialog.addMessage("Instrucciones:",15,"red");
+Dialog.addMessage("A continuacion se solicita al usuario que seleccione por inspeccion visual", 13);
+Dialog.addMessage("el plano en foco del Stack de imagenes y delimite en una ROI rectangular", 13);
+Dialog.addMessage("la bola superior izquierda.", 13);
+Dialog.addMessage("Nota: la seleccion de foco por el usuario es un punto de referencia inicial para el plugin.\nSin embargo, el plugin selecciona como foco el plano con RCR mas alto y es el plano \nutilizado para los calculos.", 10, "blue");
+Dialog.show;
+
+
+run("Set Scale...", "distance=1 known=1 unit=mm");
+
+waitForUser("Seleccione el plano foco por inspeccion visual y despues presione OK:");
+
+
+foco = getSliceNumber();
+
+setTool("rectangle");
+setSlice(foco);
+
+waitForUser("Seleccione una ROI que cubra el punto superior izquierdo y despues presione OK:");
+List.setMeasurements;
+
+b_x=List.getValue("BX");
+b_y=List.getValue("BY");
+a=List.getValue("Height");
+ancho=a;
+l=List.getValue("Width");
+largo=l;
+nplanos=getTitle();
+
+//setBatchMode("hide");
+
+px=getNumericTag("0028,0030");
+pf=getNumericTag("0018,0050");
+if (isNaN(pf)){
+	pf=1;
+}
+
+
+x_coor=newArray;
+y_coor=newArray;
+
+x_pt=newArray;
+y_pt=newArray;
+
+//por el protocolo voy a definir que siempre voy a tener 20 bolas
+//y la posicion del fantoma para todas las pruebas va a ser el mismo
+//con ello puedo dar las coordenadas fijas para las bolas
+
+//guardar las cooredenadas de los puntos
+i=0;
+for(k=1;k<=5;k++){
+	for(j=1;j<=4;j++){
+		x_pt[i]=j;
+		y_pt[i]=k;
+		dist=dt/px;
+		ptx=b_x+dist*(j-1);
+		pty=b_y+dist*(k-1);
+		v=buscarpxmax(ptx,pty,l,a);
+		x_coor[i]=v[0];
+		y_coor[i]=v[1];
+		i=i+1;
+	}
+}
+
+
+
+//en cada plano el tamaño de pixel es distinto, se debe leer en cada imagen
+
+// hacer para un punto
+path = ruta + nombre +".txt";
+path2 = ruta + nombre +"-resultados.txt";
+File.delete(path);
+File.delete(path2);
+foco_1=newArray;
+fwhm=newArray;
+bola=1;
+
+//Cabecera de archivo de resultados
+software=getTag("0018,1020");
+modelo=getTag("0008,1090");
+manufacture=getTag("0008,0070");
+fecha_imagen=getTag("0008,0020");
+getDateAndTime(year, month, dayOfWeek, dayOfMonth, hour, minute, second, msec);
+month=month+1;
+File.append('Fabricante: '+manufacture,path);
+File.append('Modelo del equipo: '+modelo,path);
+File.append('Version de Software (reconstruccion)'+software,path);
+File.append('Version de Software (reconstruccion)'+software,path);
+File.append('Fecha Adquisicion Imagenes: '+fecha_imagen,path);
+File.append('Fecha Ejecucion de la Prueba: '+dayOfMonth+'/'+month+'/'+year,path);
+File.append("\n ", path);
+for(i=1;i<=3;i++){
+for(j=2;j<=4;j++){
+print('Calculando bola '+bola+'...');
+selectWindow(nplanos);
+vp_max=newArray;
+vpm_f=newArray;
+dtp_f=newArray;
+sdnr=newArray;
+int=0;
+if (i==1){
+	for (slice=1; slice<=nSlices; slice++) {
+		setSlice(slice);
+		px=getNumericTag("0028,0030"); //valor pixel, cambia en cada plano
+		lp=25/px;
+		pt=buscar_coor(x_pt,y_pt,i,j);
+		xp=Math.round(x_coor[pt]-(lp/2)); //Cuadrado para buscar
+		yp=Math.round(y_coor[pt]-(lp/2)); //Cuadrado para buscar
+		makeRectangle(xp,yp,lp,lp);
+		List.setMeasurements;
+		vp_max[int]=List.getValue("Max");
+		
+		v=buscarpxmax(xp,yp,lp,lp);
+		if(v[0]==0 && v[1]==0){
+			x_ref=x_coor[pt];
+			y_ref=y_coor[pt];
+		} else {
+			x_ref=v[0];
+			y_ref=v[1];
+		}
+		lp=5/px;
+		xp=Math.round(x_ref+(7.5/px));
+		yp=Math.round(y_ref-(2.5/px));
+		makeRectangle(xp,yp,lp,lp);
+		List.setMeasurements;
+		v1=List.getValue("Mean");
+		st1=List.getValue("StdDev");
+		
+		vpm_f[int]=v1;
+		dtp_f[int]=st1;
+		sdnr[int]=(vp_max[int]-vpm_f[int])/dtp_f[int];
+		int=int+1;
+	}
+}	
+
+if (i==4){
+	for (slice=1; slice<=nSlices; slice++) {
+		setSlice(slice);
+		px=getNumericTag("0028,0030"); //valor pixel, cambia en cada plano
+		lp=25/px;
+		pt=buscar_coor(x_pt,y_pt,i,j);
+		xp=Math.round(x_coor[pt]-(lp/2)); //Cuadrado para buscar
+		yp=Math.round(y_coor[pt]-(lp/2)); //Cuadrado para buscar
+		makeRectangle(xp,yp,lp,lp);
+		List.setMeasurements;
+		vp_max[int]=List.getValue("Max");
+		
+		v=buscarpxmax(xp,yp,lp,lp);
+		if(v[0]==0 && v[1]==0){
+			x_ref=x_coor[pt];
+			y_ref=y_coor[pt];
+		} else {
+			x_ref=v[0];
+			y_ref=v[1];
+		}
+		lp=5/px;
+		xp=Math.round(x_ref-(7.5/px));
+		yp=Math.round(y_ref-(2.5/px));
+		makeRectangle(xp,yp,lp,lp);
+		List.setMeasurements;
+		v2=List.getValue("Mean");
+		st2=List.getValue("StdDev");
+		
+		vpm_f[int]=v2;
+		dtp_f[int]=st2;
+		sdnr[int]=(vp_max[int]-vpm_f[int])/dtp_f[int];
+		int=int+1;
+	}
+}
+
+if(i==2 || i==3){
+for (slice=1; slice<=nSlices; slice++) {
+		setSlice(slice);
+		px=getNumericTag("0028,0030"); //valor pixel, cambia en cada plano
+		lp=25/px;
+		pt=buscar_coor(x_pt,y_pt,i,j);
+		xp=Math.round(x_coor[pt]-(lp/2)); //Cuadrado para buscar
+		yp=Math.round(y_coor[pt]-(lp/2)); //Cuadrado para buscar
+		makeRectangle(xp,yp,lp,lp);
+		List.setMeasurements;
+		vp_max[int]=List.getValue("Max");
+		v=buscarpxmax(xp,yp,lp,lp);
+		if(v[0]==0 && v[1]==0){
+			x_ref=x_coor[pt];
+			y_ref=y_coor[pt];
+		} else {
+			x_ref=v[0];
+			y_ref=v[1];
+		}
+		lp=5/px;
+		xp=Math.round(x_ref+(7.5/px));
+		yp=Math.round(y_ref-(2.5/px));
+		makeRectangle(xp,yp,lp,lp);
+		List.setMeasurements;
+		v1=List.getValue("Mean");
+		st1=List.getValue("StdDev");
+		xp=Math.round(x_ref-(7.5/px));
+		yp=Math.round(y_ref-(2.5/px));
+		makeRectangle(xp,yp,lp,lp);
+		List.setMeasurements;
+		v2=List.getValue("Mean");
+		st2=List.getValue("StdDev");
+		vpm_f[int]=(v1+v2)/2;
+		dtp_f[int]=(st1+st2)/2;
+		sdnr[int]=(vp_max[int]-vpm_f[int])/dtp_f[int];
+		int=int+1;
+}		
+}
+
+
+
+max=buscarmax(sdnr);
+cor=coormax(sdnr);//plano foco
+
+
+
+fda=newArray;
+z_coor=newArray;
+
+
+
+for(k=0;k<sdnr.length;k++){
+	fda[k]=sdnr[k]/max;
+	z_coor[k]=(k+1)*pf;
+}
+
+
+lim_res=0.3;
+foco=cor*pf;
+	a=1;
+	b=1;
+for(k=0;k<fda.length-1;k++){
+	if(fda[k]<lim_res && lim_res<fda[k+1]){
+		z1=z_coor[k]+((z_coor[k+1]-z_coor[k])/(fda[k+1]-fda[k]))*(lim_res-fda[k]);
+		a=0;
+		ab1=k;
+	}
+	if(fda[k]>lim_res && lim_res>fda[k+1]){		
+		z2=z_coor[k]+((z_coor[k+1]-z_coor[k])/(fda[k+1]-fda[k]))*(lim_res-fda[k]);
+		b=0;
+		ab2=k;
+	}
+	if (a==0 && b==0){
+		if (z1<foco && foco<z2){
+			za=z1;
+			zb=z2;
+			ab3=ab1;
+			ab4=ab2;
+			a=1;
+			b=1;
+	}
+}
+}
+Fit.doFit("Gaussian", z_coor, fda);
+a=Fit.p(0);
+b=Fit.p(1);
+c=2.35*Fit.p(3); //metodo antiguo
+y2 = newArray(fda.length);
+for (k=0; k<fda.length; k++)
+   y2[k] = Fit.f(z_coor[k]);
+
+
+if (criterio == "Criterio 30%"){
+	fwhm[bola-1]=zb-za;
+}
+
+if (criterio == "Criterio 50%"){
+	fwhm[bola-1]=c;
+}
+
+ab4=ab4-ab3; //numero de planos por encima
+foco_1[bola-1]=cor*pf;
+c=bola-1;
+graficar(z_coor,fda,y2,bola);
+
+
+print('Planos encima del limite: '+ab4);
+
+//guardar en archivo
+File.append('Bola'+bola,path);
+File.append('Z' + "\t"+'FDA(z)'+'\t'+'Ajuste', path);
+
+for (k=0; k<fda.length; k++)
+	File.append(z_coor[k] + "\t"+ fda[k] +'\t'+ y2[k], path);
+File.append("\n ", path);
+bola=bola+1;
+}}
+
+//Array.show(foco_1,fwhm);
+run("Select None");
+Array.getStatistics(foco_1, min, max, mean, stdDev);
+
+
+cor=Math.round(mean);
+cor=Math.round(cor)/pf;
+selectWindow(nplanos);
+setSlice(cor);
+
+i=0;
+for(k=1;k<=5;k++){
+	for(j=1;j<=4;j++){
+		x_pt[i]=j;
+		y_pt[i]=k;
+		px=getNumericTag("0028,0030");
+		dist=dt/px;
+		ptx=b_x+dist*(j-1);
+		pty=b_y+dist*(k-1);
+		v=buscarpxmax(ptx,pty,largo,ancho);
+		x_coor[i]=v[0];
+		y_coor[i]=v[1];
+		i=i+1;
+	}
+}
+dist=newArray;
+
+//lineas horizontales
+s=0;
+for(j=1;j<=5;j++){
+  for (i = 1; i <= 3; i++){
+		px=getNumericTag("0028,0030");
+    k=buscar_coor(x_pt,y_pt,i,j);
+    l=buscar_coor(x_pt,y_pt,i+1,j);
+    d=(x_coor[k]-x_coor[l])*(x_coor[k]-x_coor[l]);
+    d=d+(y_coor[k]-y_coor[l])*(y_coor[k]-y_coor[l]);
+    d=Math.sqrt(d);
+    dist[s]=d*px;
+    s=s+1;  
+  }
+}
+
+
+//lineas verticales
+for(j=1;j<=4;j++){
+  for (i = 1; i <= 4; i++){
+    px=getNumericTag("0028,0030");
+    k=buscar_coor(x_pt,y_pt,j,i);
+    l=buscar_coor(x_pt,y_pt,j,i+1);
+    d=(x_coor[k]-x_coor[l])*(x_coor[k]-x_coor[l]);
+    d=d+(y_coor[k]-y_coor[l])*(y_coor[k]-y_coor[l]);
+    d=Math.sqrt(d);
+    dist[s]=d*px;
+    s=s+1;  
+  }
+}
+
+
+
+close(nplanos);
+File.append('Resultados:',path2);
+File.append('Fabricante: '+manufacture,path2);
+File.append('Modelo del equipo: '+modelo,path2);
+File.append('Version de Software (reconstruccion): '+software,path2);
+File.append('Version de Software (reconstruccion): '+software,path2);
+File.append('Fecha Adquisicion Imagenes: '+fecha_imagen,path2);
+File.append('Fecha Ejecucion de la Prueba: '+dayOfMonth+'/'+month+'/'+year,path2);
+File.append('Criterio de calculo de la anchura: '+criterio,path2);
+File.append("\n ", path2);
+//Array.show(foco_1,fwhm);
+File.append('Bola' + "\t"+'Plano Foco'+'\t'+'Anchura FDA', path2);
+for (k=0; k<fwhm.length; k++){
+	ball=k+1;
+	File.append(ball + "\t"+ foco_1[k] +'\t'+fwhm[k], path2);
+}
+File.append("\n ", path2);
+
+run("Images to Stack", "name=Bolas title=[] use");
+
+run("Select None");
+Array.getStatistics(foco_1, min, max, mean, stdDev);
+setResult('Foco medio',0,mean);
+setResult('Foco Desv',0,stdDev);
+setResult('Foco Min',0,min);
+setResult('Foco Max',0,max);
+
+File.append('Valor Medio del Foco:'+mean,path2);
+File.append('Desv. Estandar del Foco:'+stdDev,path2);
+File.append('Valor Minimo del Foco:'+min,path2);
+File.append('Valor Maximo del Foco:'+max,path2);
+File.append("\n ", path2);
+Array.getStatistics(fwhm, min, max, mean, stdDev);
+setResult('Anchura FDA medio',0,mean);
+setResult('Anchura FDA Desv',0,stdDev);
+setResult('Anchura FDA Min',0,min);
+setResult('Anchura FDA Max',0,max);
+
+File.append('Valor Medio del ancho de la FDA:'+mean,path2);
+File.append('Desv. Estandar del ancho de la FDA::'+stdDev,path2);
+File.append('Valor Minimo del ancho de la FDA::'+min,path2);
+File.append('Valor Maximo del ancho de la FDA::'+max,path2);
+File.append("\n ", path2);
+
+Array.getStatistics(dist, min, max, mean, stdDev);
+setResult('Dist medio',0,mean);
+setResult('Dist Desv',0,stdDev);
+setResult('Dist Min',0,min);
+setResult('Dist Max',0,max);
+updateResults();
+
+File.append('Valor Medio de la distancia entre bolas:'+mean,path2);
+File.append('Desv. Estandar de la distancia entre bolas:'+stdDev,path2);
+File.append('Valor Minimo de la distancia entre bolas:'+min,path2);
+File.append('Valor Maximo de la distancia entre bolas:'+max,path2);
+File.append("\n ", path2);
+close("Log");
+setBatchMode("exit and display");
+
+
+
+Dialog.create("Dispersion geometrica y de Objetos");
+Dialog.addMessage("Proceso Finalizado Con Exito!",15,"red");
+Dialog.addMessage("A continuacion encontrara los resultados de las pruebas en la ventana Results, ", 13);
+Dialog.addMessage("los perfiles de las bolas en la carpeta que usted selecciono dentro del archivo "+nombre+".txt", 13);
+Dialog.addMessage("y los resultados de las pruebas en la carpeta que usted selecciono dentro del archivo "+nombre+"-resultados.txt", 13);
+Dialog.addMessage("Muchas Gracias por utilizar el Plugin.", 13);
+Dialog.addMessage("David Diaz-UCM-2022", 9, "blue");
+Dialog.show;
+
+
+// Funciones &&&&&&&&&&&&&&&&&
+
+function graficar(z_coor,fda,y2,bola){
+	Plot.create("Bola"+bola, "Distance z [mm]]", "FDA");
+	Plot.setLimits(z_coor[0], z_coor[sdnr.length-1], 0, 1.1);
+	Plot.setColor("red", "red");
+	Plot.add("circle", z_coor, fda);
+	Plot.setColor("black");
+	Plot.setLineWidth(2);
+	//Plot.add("line", z_coor, y2);
+	Plot.setFontSize(14);
+	Plot.addLegend("Funcion de Dispersion de Artefactos");
+	Plot.addText("Bola "+bola, 0.3, 0.4)
+	Plot.show;
+}
+
+function buscar_coor(x_coor,y_coor,x_o,y_o){
+  for(i=0;i<x_coor.length;i++){
+    if(x_coor[i]==x_o && y_coor[i]==y_o){
+       return i;
+    }
+  }
+
+}
+
+function buscarmax(sdnr){
+	max=sdnr[0];
+	for(i=0;i<sdnr.length;i++){
+		if (sdnr[i]>max){
+			max=sdnr[i];
+		}
+	}
+	return max;
+}
+
+function buscarmin(sdnr){
+	min=sdnr[0];
+	for(i=0;i<sdnr.length;i++){
+		if (sdnr[i]<min){
+			min=sdnr[i];
+		}
+	}
+	return min;
+}
+
+function coormax(sdnr){
+	max=sdnr[0];
+	for(i=0;i<sdnr.length;i++){
+		if (sdnr[i]>max){
+			max=sdnr[i];
+			coor=i;
+		}
+	}
+	return coor;
+}
+
+
+
+function getNumericTag(tag) {
+    value = getTag(tag);
+    if (value=="") return NaN;
+    index3 = indexOf(value, "\\");
+    if (index3>0)
+      value = substring(value, 0, index3);
+    value = 0 + value; // convert to number
+    return value;
+  }
+
+  // This function returns the value of the specified 
+  // tag  (e.g., "0010,0010") as a string. Returns "" 
+  // if the tag is not found.
+  function getTag(tag) {
+      info = getImageInfo();
+      index1 = indexOf(info, tag);
+      if (index1==-1) return "";
+      index1 = indexOf(info, ":", index1);
+      if (index1==-1) return "";
+      index2 = indexOf(info, "\n", index1);
+      value = substring(info, index1+1, index2);
+      return value;
+  }
+
+	function buscarpxmax(bx,by,lar,anch){
+	makeRectangle(bx,by,lar,anch);
+	run("Find Maxima...", "prominence=20 strict output=List");
+	t=Table.size;
+	if(t==1){
+		x=Table.get("X",0);
+		y=Table.get("Y",0);
+		selectWindow("Results"); 
+    run("Close" );
+		return newArray(x,y);
+	}
+	if(t==0){
+	x=0;
+	y=0;
+	selectWindow("Results"); 
+         run("Close" );
+	return newArray(x,y);
+	}
+	if(t!=1){
+	max=0;
+	for(i=0;i<Table.size;i++){
+		x1=Table.get("X",i);
+		y1=Table.get("Y",i);
+		temp=getPixel(x1, y1);
+		if(max<temp){
+			max=temp;
+			x=x1;
+			y=y1;
+		}
+	}
+selectWindow("Results"); 
+         run("Close" );
+	return newArray(x,y);
+	}
+}
+}
